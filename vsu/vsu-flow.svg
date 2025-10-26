@@ -1,0 +1,115 @@
+<!--?xml version="1.0" encoding="UTF-8"?-->
+<svg width="1200" height="1600" viewBox="0 0 1200 1600" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <style>
+    .box { fill: #ffffff; stroke: #2b6cb0; stroke-width: 2; rx: 8; ry: 8; }
+    .bigbox { fill: #f7fafc; stroke: #2b6cb0; stroke-width: 2; rx: 12; ry: 12; }
+    .text { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #1a202c; }
+    .title { font-weight: 700; font-size: 16px; }
+    .arrow { stroke: #2d3748; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .note { font-size: 12px; fill: #4a5568; }
+  </style>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2d3748"></polygon>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="60" y="36" class="text title">VSU — Flowchart (high-level)</text>
+
+  <!-- Start -->
+  <rect x="460" y="60" width="280" height="48" class="box"></rect>
+  <text x="600" y="92" text-anchor="middle" class="text">Start Program</text>
+
+  <!-- Parse -->
+  <rect x="360" y="140" width="480" height="48" class="box"></rect>
+  <text x="600" y="172" text-anchor="middle" class="text">Parse CLI arguments</text>
+
+  <path class="arrow" d="M600 108 L600 140"></path>
+
+  <!-- Paths/load -->
+  <rect x="120" y="220" width="960" height="120" class="bigbox"></rect>
+  <text x="600" y="252" text-anchor="middle" class="text">Determine paths &amp; load persistent files</text>
+
+  <text x="600" y="278" text-anchor="middle" class="text">- Check ignored.txt/.json</text>
+  <text x="600" y="298" text-anchor="middle" class="text">- Load hashes.json (or create)</text>
+  <text x="600" y="318" text-anchor="middle" class="text">- Load version_history.json (or create)</text>
+
+  <path class="arrow" d="M600 188 L600 220"></path>
+
+  <!-- Scan -->
+  <rect x="300" y="360" width="600" height="60" class="box"></rect>
+  <text x="600" y="398" text-anchor="middle" class="text">Scan root folder (recursive)</text>
+
+  <path class="arrow" d="M600 340 L600 360"></path>
+
+  <!-- For each file -->
+  <rect x="120" y="460" width="960" height="80" class="bigbox"></rect>
+  <text x="600" y="488" text-anchor="middle" class="text">For each file with allowed extension</text>
+  <text x="600" y="508" text-anchor="middle" class="text">- If matches ignored → skip</text>
+  <text x="600" y="528" text-anchor="middle" class="text">- Else read file lines</text>
+
+  <path class="arrow" d="M600 420 L600 460"></path>
+
+  <!-- Version detection -->
+  <rect x="260" y="580" width="680" height="60" class="box"></rect>
+  <text x="600" y="618" text-anchor="middle" class="text">Find "// Version: x.x.x.x" (case-insensitive)</text>
+
+  <path class="arrow" d="M600 540 L600 580"></path>
+
+  <!-- Compute hash -->
+  <rect x="260" y="660" width="680" height="60" class="box"></rect>
+  <text x="600" y="698" text-anchor="middle" class="text">Compute SHA256 of content (excluding version line)</text>
+
+  <path class="arrow" d="M600 640 L600 660"></path>
+
+  <!-- Compare -->
+  <rect x="260" y="740" width="680" height="60" class="box"></rect>
+  <text x="600" y="778" text-anchor="middle" class="text">Compare with hashes.json entry</text>
+
+  <path class="arrow" d="M600 720 L600 740"></path>
+
+  <!-- Decision: changed? -->
+  <rect x="200" y="840" width="800" height="48" class="box"></rect>
+  <text x="600" y="872" text-anchor="middle" class="text">Hash equal &amp; had version? → No change (skip)</text>
+  <text x="600" y="892" text-anchor="middle" class="text">Else → Increment version</text>
+
+  <path class="arrow" d="M600 808 L600 840"></path>
+
+  <!-- Increment & update -->
+  <rect x="220" y="940" width="760" height="80" class="bigbox"></rect>
+  <text x="600" y="974" text-anchor="middle" class="text">Increment version according to mode</text>
+  <text x="600" y="994" text-anchor="middle" class="text">Update version line → Write file → Update hashes dictionary</text>
+
+  <path class="arrow" d="M600 888 L600 940"></path>
+
+  <!-- History entry -->
+  <rect x="300" y="1050" width="600" height="60" class="box"></rect>
+  <text x="600" y="1088" text-anchor="middle" class="text">Append to version_history.json (file, old, new, UTC timestamp)</text>
+
+  <path class="arrow" d="M600 1020 L600 1050"></path>
+
+  <!-- Add report entry -->
+  <rect x="300" y="1130" width="600" height="48" class="box"></rect>
+  <text x="600" y="1162" text-anchor="middle" class="text">Add entry to in-memory report list</text>
+
+  <path class="arrow" d="M600 1110 L600 1130"></path>
+
+  <!-- Loop back next file -->
+  <path class="arrow" d="M600 1180 L600 1320"></path>
+  <text x="600" y="1208" class="note" text-anchor="middle">process next file</text>
+
+  <!-- Finalize -->
+  <rect x="200" y="1320" width="800" height="120" class="bigbox"></rect>
+  <text x="600" y="1356" text-anchor="middle" class="text">After all files:</text>
+  <text x="600" y="1376" text-anchor="middle" class="text">- Save hashes.json</text>
+  <text x="600" y="1396" text-anchor="middle" class="text">- Save version_history.json</text>
+  <text x="600" y="1416" text-anchor="middle" class="text">- Compute average project version</text>
+  <text x="600" y="1436" text-anchor="middle" class="text">- Write version_raport.txt</text>
+
+  <path class="arrow" d="M600 1440 L600 1492"></path>
+
+  <rect x="460" y="1492" width="280" height="48" class="box"></rect>
+  <text x="600" y="1524" text-anchor="middle" class="text">End</text>
+</svg>
