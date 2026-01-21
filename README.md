@@ -223,6 +223,17 @@ VSU --increment-mode build
 VSU --max-revision 9 --max-build 99
 ```
 
+## Usage in Visual Studio
+
+# add in project file `project.csproj`
+
+```xml
+  <Target Name="UpdateAssemblyVersion" BeforeTargets="BeforeBuild">
+    <Exec Command="[path to vsu.exe file]" />
+  </Target>
+
+```
+
 ---
 
 ## 🧠 Notes
