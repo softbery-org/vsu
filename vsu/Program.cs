@@ -16,6 +16,7 @@ namespace VSU
         private static readonly string VERSION_RAPORT_TXT = "version_raport.txt";
         private static readonly string HASHES_JSON = "hashes.json";
         private static readonly string VERSION_HISTORY_JSON = "version_history.json";
+        private static readonly Regex VERSION_REGEX = new(@"^\d+\.\d+\.\d+\.\d+$", RegexOptions.Compiled);
 
         static void Main(string[] args)
         {
@@ -27,6 +28,23 @@ namespace VSU
             }
 
             string rootFolder = options.Path ?? Directory.GetCurrentDirectory();
+            if (!Directory.Exists(rootFolder))
+            {
+                Console.Error.WriteLine($"[ERROR] Path does not exist: {rootFolder}");
+                Environment.Exit(1);
+            }
+
+            try
+            {
+                ValidateOptions(options, rootFolder);
+            }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine($"[ERROR] Invalid argument: {ex.Message}");
+                ShowHelp();
+                Environment.Exit(1);
+            }
+
             string ignoredFilePath = options.IgnoredFile ?? Path.Combine(rootFolder, IGNORED_TXT);
             string reportPath = options.ReportPath ?? Path.Combine(rootFolder, VERSION_RAPORT_TXT);
             string hashFilePath = Path.Combine(rootFolder, HASHES_JSON);
@@ -62,6 +80,20 @@ namespace VSU
             Console.WriteLine($"[INFO] Ignored patterns: {ignoredPatterns.Count}");
             Console.WriteLine($"[INFO] Extensions: {string.Join(", ", allowedExtensions)}");
             Console.WriteLine($"[INFO] Increment mode: {options.IncrementMode}");
+            if (!string.IsNullOrEmpty(options.SetAllVersion))
+                Console.WriteLine($"[INFO] Manual all version: {options.SetAllVersion}");
+            if (options.SetFiles.Count > 0)
+                Console.WriteLine($"[INFO] Manual files: {string.Join(", ", options.SetFiles)} to {options.SetVersion ?? "none"}");
+            bool hasPartialSets = options.SetMajor.HasValue || options.SetMinor.HasValue || options.SetBuild.HasValue || options.SetRevision.HasValue;
+            if (hasPartialSets)
+            {
+                var partialInfo = new List<string>();
+                if (options.SetMajor.HasValue) partialInfo.Add($"major={options.SetMajor}");
+                if (options.SetMinor.HasValue) partialInfo.Add($"minor={options.SetMinor}");
+                if (options.SetBuild.HasValue) partialInfo.Add($"build={options.SetBuild}");
+                if (options.SetRevision.HasValue) partialInfo.Add($"revision={options.SetRevision}");
+                Console.WriteLine($"[INFO] Manual partial: {string.Join(", ", partialInfo)}");
+            }
             Console.WriteLine();
 
             foreach (var file in Directory.EnumerateFiles(rootFolder, "*.*", SearchOption.AllDirectories)
@@ -73,10 +105,82 @@ namespace VSU
                     continue;
                 }
 
+                bool isTarget = options.SetFiles.Count == 0;
+                if (!isTarget)
+                {
+                    isTarget = options.SetFiles.Any(sf =>
+                    {
+                        try
+                        {
+                            string fullSetPath = Path.GetFullPath(Path.Combine(rootFolder, sf.Trim()));
+                            return file.Equals(fullSetPath, StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    });
+                }
+
+                string? manualFull = null;
+                if (isTarget)
+                {
+                    if (options.SetFiles.Count == 0)
+                    {
+                        manualFull = options.SetAllVersion;
+                    }
+                    else
+                    {
+                        manualFull = options.SetVersion;
+                    }
+                }
+
+                string? targetVersionStr = null;
+                bool isManual = false;
+                if (isTarget)
+                {
+                    if (!string.IsNullOrEmpty(manualFull))
+                    {
+                        // Parse and clamp full version
+                        var parts = ParseVersionToParts(manualFull);
+                        int[] maxs = { options.MaxMajor, options.MaxMinor, options.MaxBuild, options.MaxRevision };
+                        for (int i = 0; i < 4; i++)
+                        {
+                            if (parts[i] > maxs[i]) parts[i] = maxs[i];
+                        }
+                        targetVersionStr = string.Join(".", parts);
+                        isManual = true;
+                    }
+                    else if (hasPartialSets)
+                    {
+                        // Partial set and clamp only set parts
+                        string currentVer = GetVersionFromFile(file) ?? "0.0.0.0";
+                        var parts = ParseVersionToParts(currentVer);
+                        if (options.SetMajor.HasValue)
+                        {
+                            parts[0] = Math.Min(options.SetMajor.Value, options.MaxMajor);
+                        }
+                        if (options.SetMinor.HasValue)
+                        {
+                            parts[1] = Math.Min(options.SetMinor.Value, options.MaxMinor);
+                        }
+                        if (options.SetBuild.HasValue)
+                        {
+                            parts[2] = Math.Min(options.SetBuild.Value, options.MaxBuild);
+                        }
+                        if (options.SetRevision.HasValue)
+                        {
+                            parts[3] = Math.Min(options.SetRevision.Value, options.MaxRevision);
+                        }
+                        targetVersionStr = string.Join(".", parts);
+                        isManual = true;
+                    }
+                }
+
                 try
                 {
                     string versionBefore = GetVersionFromFile(file);
-                    string? newVersion = ProcessFile(file, options, hashes);
+                    string? newVersion = ProcessFile(file, options, hashes, isManual, targetVersionStr);
 
                     if (newVersion != null)
                     {
@@ -84,12 +188,14 @@ namespace VSU
                         report.Add($"{file} -> {newVersion}");
                         allVersions.Add(newVersion);
 
+                        string histType = isManual ? "manual" : "auto";
                         history.Add(new VersionHistory
                         {
                             File = file,
                             OldVersion = string.IsNullOrEmpty(versionBefore) ? "none" : versionBefore,
                             NewVersion = newVersion,
-                            Date = DateTime.UtcNow
+                            Date = DateTime.UtcNow,
+                            Type = histType
                         });
                     }
                     else if (!string.IsNullOrEmpty(versionBefore))
@@ -121,6 +227,140 @@ namespace VSU
             File.WriteAllLines(reportPath, report);
             Console.WriteLine($"\n[OK] Finished. Report: {reportPath}");
             Console.WriteLine($"[INFO] Average project version: {overallVersion}");
+        }
+
+        private static void ValidateOptions(Options options, string rootFolder)
+        {
+            bool hasPartialSets = options.SetMajor.HasValue || options.SetMinor.HasValue || options.SetBuild.HasValue || options.SetRevision.HasValue;
+
+            // Validate extensions
+            if (options.Extensions.Any())
+            {
+                foreach (var ext in options.Extensions)
+                {
+                    if (string.IsNullOrWhiteSpace(ext))
+                        throw new ArgumentException("Extension cannot be empty.");
+                    if (!ext.StartsWith("."))
+                        throw new ArgumentException($"Extension '{ext}' must start with a dot (.).");
+                }
+            }
+
+            // Validate version formats
+            if (!string.IsNullOrEmpty(options.SetAllVersion) && !VERSION_REGEX.IsMatch(options.SetAllVersion))
+                throw new ArgumentException($"Invalid version format for --set-all-version: '{options.SetAllVersion}'. Expected: MAJOR.MINOR.BUILD.REVISION (e.g., 1.0.0.0)");
+
+            if (!string.IsNullOrEmpty(options.SetVersion) && !VERSION_REGEX.IsMatch(options.SetVersion))
+                throw new ArgumentException($"Invalid version format for --version: '{options.SetVersion}'. Expected: MAJOR.MINOR.BUILD.REVISION (e.g., 1.0.0.0)");
+
+            // Validate max values (range: 0 to 999, for example; adjust as needed)
+            if (options.MaxMajor < 0 || options.MaxMajor > 999)
+                throw new ArgumentException("--max-major must be between 0 and 999");
+            if (options.MaxMinor < 0 || options.MaxMinor > 999)
+                throw new ArgumentException("--max-minor must be between 0 and 999");
+            if (options.MaxBuild < 0 || options.MaxBuild > 999)
+                throw new ArgumentException("--max-build must be between 0 and 999");
+            if (options.MaxRevision < 0 || options.MaxRevision > 999)
+                throw new ArgumentException("--max-revision must be between 0 and 999");
+
+            // Validate set values (range: 0 to max, inclusive)
+            if (options.SetMajor.HasValue && (options.SetMajor.Value < 0 || options.SetMajor.Value > options.MaxMajor))
+                throw new ArgumentException($"--set-major {options.SetMajor} must be between 0 and {options.MaxMajor}");
+            if (options.SetMinor.HasValue && (options.SetMinor.Value < 0 || options.SetMinor.Value > options.MaxMinor))
+                throw new ArgumentException($"--set-minor {options.SetMinor} must be between 0 and {options.MaxMinor}");
+            if (options.SetBuild.HasValue && (options.SetBuild.Value < 0 || options.SetBuild.Value > options.MaxBuild))
+                throw new ArgumentException($"--set-build {options.SetBuild} must be between 0 and {options.MaxBuild}");
+            if (options.SetRevision.HasValue && (options.SetRevision.Value < 0 || options.SetRevision.Value > options.MaxRevision))
+                throw new ArgumentException($"--set-revision {options.SetRevision} must be between 0 and {options.MaxRevision}");
+
+            // For full versions, validate each part against max
+            if (!string.IsNullOrEmpty(options.SetAllVersion))
+            {
+                var parts = ParseVersionToParts(options.SetAllVersion);
+                if (parts[0] > options.MaxMajor)
+                    throw new ArgumentException($"MAJOR in --set-all-version ({parts[0]}) exceeds --max-major ({options.MaxMajor})");
+                if (parts[1] > options.MaxMinor)
+                    throw new ArgumentException($"MINOR in --set-all-version ({parts[1]}) exceeds --max-minor ({options.MaxMinor})");
+                if (parts[2] > options.MaxBuild)
+                    throw new ArgumentException($"BUILD in --set-all-version ({parts[2]}) exceeds --max-build ({options.MaxBuild})");
+                if (parts[3] > options.MaxRevision)
+                    throw new ArgumentException($"REVISION in --set-all-version ({parts[3]}) exceeds --max-revision ({options.MaxRevision})");
+            }
+
+            if (!string.IsNullOrEmpty(options.SetVersion))
+            {
+                var parts = ParseVersionToParts(options.SetVersion);
+                if (parts[0] > options.MaxMajor)
+                    throw new ArgumentException($"MAJOR in --version ({parts[0]}) exceeds --max-major ({options.MaxMajor})");
+                if (parts[1] > options.MaxMinor)
+                    throw new ArgumentException($"MINOR in --version ({parts[1]}) exceeds --max-minor ({options.MaxMinor})");
+                if (parts[2] > options.MaxBuild)
+                    throw new ArgumentException($"BUILD in --version ({parts[2]}) exceeds --max-build ({options.MaxBuild})");
+                if (parts[3] > options.MaxRevision)
+                    throw new ArgumentException($"REVISION in --version ({parts[3]}) exceeds --max-revision ({options.MaxRevision})");
+            }
+
+            // Validate increment mode
+            var validModes = new[] { "major", "minor", "build", "revision" };
+            if (!validModes.Contains(options.IncrementMode.ToLower()))
+                throw new ArgumentException($"Invalid --increment-mode: '{options.IncrementMode}'. Valid: {string.Join(", ", validModes)}");
+
+            // Validate paths
+            if (!string.IsNullOrEmpty(options.IgnoredFile) && !File.Exists(options.IgnoredFile))
+                throw new ArgumentException($"Ignored file does not exist: {options.IgnoredFile}");
+
+            string reportPath = options.ReportPath ?? Path.Combine(rootFolder, VERSION_RAPORT_TXT);
+            string? reportDir = Path.GetDirectoryName(reportPath);
+            if (!string.IsNullOrEmpty(reportDir) && !Directory.Exists(reportDir))
+                throw new ArgumentException($"Report directory does not exist: {reportDir}");
+
+            if (options.SetFiles.Any())
+            {
+                if (string.IsNullOrEmpty(options.SetVersion) && !hasPartialSets)
+                    throw new ArgumentException("--set-files requires either --version or at least one of --set-major, --set-minor, --set-build, --set-revision");
+
+                foreach (var setFile in options.SetFiles)
+                {
+                    if (string.IsNullOrWhiteSpace(setFile))
+                        throw new ArgumentException("Set file path cannot be empty.");
+                    string fullSetPath;
+                    try
+                    {
+                        fullSetPath = Path.GetFullPath(Path.Combine(rootFolder, setFile.Trim()));
+                    }
+                    catch (ArgumentException)
+                    {
+                        throw new ArgumentException($"Invalid set file path: {setFile}");
+                    }
+                    if (!File.Exists(fullSetPath))
+                        throw new ArgumentException($"Set file does not exist: {fullSetPath}");
+                }
+            }
+
+            // Validate path if provided
+            if (!string.IsNullOrEmpty(options.Path) && !Directory.Exists(options.Path))
+                throw new ArgumentException($"Path does not exist: {options.Path}");
+
+            // Validate report path if provided
+            if (!string.IsNullOrEmpty(options.ReportPath))
+            {
+                string? reportFullDir = Path.GetDirectoryName(Path.GetFullPath(options.ReportPath));
+                if (!Directory.Exists(reportFullDir))
+                    throw new ArgumentException($"Report path directory does not exist: {reportFullDir}");
+            }
+
+            // Additional CLI logic validation
+            if (!string.IsNullOrEmpty(options.SetAllVersion) && options.SetFiles.Any())
+                throw new ArgumentException("--set-all-version cannot be used with --set-files");
+        }
+
+        internal static int[] ParseVersionToParts(string version)
+        {
+            var parts = version.Split('.')
+                .Select(x => int.TryParse(x, out int n) ? n : 0)
+                .Take(4)
+                .ToArray();
+            while (parts.Length < 4) parts = parts.Append(0).ToArray();
+            return parts;
         }
 
         // ================================================================
@@ -159,32 +399,46 @@ namespace VSU
         // ================================================================
         // Process single file
         // ================================================================
-        static string? ProcessFile(string filePath, Options options, Dictionary<string, string> hashes)
+        static string? ProcessFile(string filePath, Options options, Dictionary<string, string> hashes, bool isManual, string? targetVersion = null)
         {
-            var lines = File.Exists(filePath) ? File.ReadAllLines(filePath).ToList() : new List<string>();
+            if (!File.Exists(filePath)) return null;
+
+            var lines = File.ReadAllLines(filePath).ToList();
             int versionIndex = lines.FindIndex(l => l.TrimStart().StartsWith("// Version", StringComparison.OrdinalIgnoreCase));
 
-            string version = "1.0.0.0";
-            if (versionIndex >= 0)
-            {
-                var match = Regex.Match(lines[versionIndex], @"\d+(\.\d+){1,3}");
-                if (match.Success)
-                    version = match.Value;
-            }
+            string currentVersion = versionIndex >= 0 ? GetVersionFromFile(filePath) : "";
 
             string contentWithoutVersion = string.Join("\n", lines.Where((_, i) => i != versionIndex));
             string newHash = ComputeHash(contentWithoutVersion);
 
-            hashes.TryGetValue(filePath, out string? oldHash);
-            if (oldHash == newHash && versionIndex >= 0)
+            bool shouldUpdate = isManual;
+
+            if (!isManual)
             {
-                Console.WriteLine($"[=] {filePath} – no changes");
-                return null;
+                hashes.TryGetValue(filePath, out string? oldHash);
+                if (oldHash == newHash && !string.IsNullOrEmpty(currentVersion))
+                {
+                    Console.WriteLine($"[=] {filePath} – no changes");
+                    return null;
+                }
+                shouldUpdate = true;
             }
 
-            version = IncrementVersion(version, options, options.IncrementMode);
+            if (!shouldUpdate) return null;
 
-            string versionLine = $"// Version: {version}";
+            string targetVer;
+            if (isManual && !string.IsNullOrEmpty(targetVersion))
+            {
+                targetVer = targetVersion;
+                Console.WriteLine($"[M] {filePath} – manual version {targetVer}");
+            }
+            else
+            {
+                targetVer = IncrementVersion(currentVersion ?? "1.0.0.0", options, options.IncrementMode);
+                Console.WriteLine($"[↑] {filePath} – new version {targetVer}");
+            }
+
+            string versionLine = $"// Version: {targetVer}";
             if (versionIndex >= 0)
                 lines[versionIndex] = versionLine;
             else
@@ -193,8 +447,7 @@ namespace VSU
             File.WriteAllLines(filePath, lines);
             hashes[filePath] = newHash;
 
-            Console.WriteLine($"[↑] {filePath} – new version {version}");
-            return version;
+            return targetVer;
         }
 
         static string ComputeHash(string text)
@@ -323,31 +576,187 @@ namespace VSU
                 string arg = args[i];
                 switch (arg)
                 {
-                    case "--help": case "-h": opts.ShowHelp = true; break;
-                    case "--path": case "-p": if (i + 1 < args.Length) opts.Path = args[++i]; break;
+                    case "--help":
+                    case "-h":
+                        opts.ShowHelp = true;
+                        break;
+                    case "--path":
+                    case "-p":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        opts.Path = args[++i];
+                        if (string.IsNullOrWhiteSpace(opts.Path))
+                            throw new ArgumentException("Path cannot be empty.");
+                        break;
                     case "--ext":
                     case "-e":
-                        if (i + 1 < args.Length)
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        var extValue = args[++i];
+                        if (string.IsNullOrWhiteSpace(extValue))
+                            throw new ArgumentException("Extensions list cannot be empty.");
+                        opts.Extensions = extValue
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Select(x => x.StartsWith('.') ? x : "." + x)
+                            .ToList();
+                        if (!opts.Extensions.Any())
+                            throw new ArgumentException("No valid extensions provided.");
+                        break;
+                    case "--ignored":
+                    case "-i":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        opts.IgnoredFile = args[++i];
+                        if (string.IsNullOrWhiteSpace(opts.IgnoredFile))
+                            throw new ArgumentException("Ignored file path cannot be empty.");
+                        break;
+                    case "--report":
+                    case "-r":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        opts.ReportPath = args[++i];
+                        if (string.IsNullOrWhiteSpace(opts.ReportPath))
+                            throw new ArgumentException("Report path cannot be empty.");
+                        break;
+                    case "--max-major":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
                         {
-                            opts.Extensions = args[++i]
-                                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                                .Select(x => x.StartsWith('.') ? x : "." + x)
-                                .ToList();
+                            opts.MaxMajor = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
                         }
                         break;
-                    case "--ignored": case "-i": if (i + 1 < args.Length) opts.IgnoredFile = args[++i]; break;
-                    case "--report": case "-r": if (i + 1 < args.Length) opts.ReportPath = args[++i]; break;
-                    case "--max-major": if (i + 1 < args.Length) opts.MaxMajor = int.Parse(args[++i]); break;
-                    case "--max-minor": if (i + 1 < args.Length) opts.MaxMinor = int.Parse(args[++i]); break;
-                    case "--max-build": if (i + 1 < args.Length) opts.MaxBuild = int.Parse(args[++i]); break;
-                    case "--max-revision": if (i + 1 < args.Length) opts.MaxRevision = int.Parse(args[++i]); break;
-                    case "--increment-mode":
-                        if (i + 1 < args.Length)
+                    case "--max-minor":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
                         {
-                            var mode = args[++i].ToLower();
-                            if (mode is "major" or "minor" or "build" or "revision")
-                                opts.IncrementMode = mode;
+                            opts.MaxMinor = int.Parse(args[++i]);
                         }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--max-build":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.MaxBuild = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--max-revision":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.MaxRevision = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--increment-mode":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        var modeValue = args[++i].ToLower();
+                        if (string.IsNullOrWhiteSpace(modeValue))
+                            throw new ArgumentException("Increment mode cannot be empty.");
+                        if (modeValue is not "major" and not "minor" and not "build" and not "revision")
+                            throw new ArgumentException($"Invalid increment mode: '{modeValue}'. Valid: major, minor, build, revision.");
+                        opts.IncrementMode = modeValue;
+                        break;
+                    case "--set-all-version":
+                    case "-s":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        opts.SetAllVersion = args[++i];
+                        if (string.IsNullOrWhiteSpace(opts.SetAllVersion))
+                            throw new ArgumentException("Set all version cannot be empty.");
+                        break;
+                    case "--set-files":
+                    case "-f":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        var filesValue = args[++i];
+                        if (string.IsNullOrWhiteSpace(filesValue))
+                            throw new ArgumentException("Set files list cannot be empty.");
+                        opts.SetFiles = filesValue
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .ToList();
+                        if (!opts.SetFiles.Any())
+                            throw new ArgumentException("No valid set files provided.");
+                        break;
+                    case "--version":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        opts.SetVersion = args[++i];
+                        if (string.IsNullOrWhiteSpace(opts.SetVersion))
+                            throw new ArgumentException("Set version cannot be empty.");
+                        break;
+                    case "--set-major":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.SetMajor = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--set-minor":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.SetMinor = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--set-build":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.SetBuild = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    case "--set-revision":
+                        if (i + 1 >= args.Length)
+                            throw new ArgumentException($"{arg} requires a value.");
+                        try
+                        {
+                            opts.SetRevision = int.Parse(args[++i]);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new ArgumentException($"Invalid integer for {arg}: {args[i]}");
+                        }
+                        break;
+                    default:
+                        if (arg.StartsWith("-"))
+                            throw new ArgumentException($"Unknown argument: {arg}");
                         break;
                 }
             }
@@ -398,6 +807,19 @@ CLI options:
       Maximum values for each version component. Higher parts increment automatically when exceeded.
       Default: 99 for all
 
+  -s, --set-all-version <version>
+      Manually set the exact version (e.g., 2.0.0.0) for ALL scanned files, ignoring content changes. Resets hashes.
+
+  -f, --set-files <list> --version <version>
+      Manually set the exact version for SPECIFIC files (comma-separated relative paths, e.g., Main.cs,Services/Utils.cs). Ignores content changes for these.
+
+  --set-major <int>
+  --set-minor <int>
+  --set-build <int>
+  --set-revision <int>
+      Manually set a specific version component (MAJOR, MINOR, BUILD, REVISION) for all scanned files or specified files with --set-files.
+      Other components remain unchanged. Values are clamped to max limits.
+
   -h, --help
       Show this help
 
@@ -422,6 +844,10 @@ Examples:
   dotnet run -- --path ""C:\Project""
   dotnet run -- --path ""C:\Project"" --ext "".cs,.json"" --ignored ""C:\ignored.txt""
   dotnet run -- --path ""C:\Project"" --increment-mode build --max-revision 9 --max-build 99
+  dotnet run -- --set-all-version 2.0.0.0
+  dotnet run -- --set-files ""Main.cs,Utils.cs"" --version 1.5.0.0
+  dotnet run -- --set-major 3
+  dotnet run -- --set-files ""Main.cs"" --set-revision 10
   dotnet run -- --report ""C:\report.txt""
 
 or run the compiled executable:
@@ -441,6 +867,13 @@ or run the compiled executable:
             public int MaxBuild { get; set; } = 99;
             public int MaxRevision { get; set; } = 99;
             public string IncrementMode { get; set; } = "revision";
+            public string? SetAllVersion { get; set; }
+            public List<string> SetFiles { get; set; } = new();
+            public string? SetVersion { get; set; }
+            public int? SetMajor { get; set; }
+            public int? SetMinor { get; set; }
+            public int? SetBuild { get; set; }
+            public int? SetRevision { get; set; }
         }
     }
 
@@ -450,5 +883,6 @@ or run the compiled executable:
         public string OldVersion { get; set; } = "";
         public string NewVersion { get; set; } = "";
         public DateTime Date { get; set; }
+        public string Type { get; set; } = "auto";
     }
 }
