@@ -11,6 +11,38 @@ namespace VSU
 {
     internal class Program
     {
+        enum LogType
+        {
+            Info,
+            Success,
+            Warning,
+            Error,
+            Manual,
+            Update,
+            Skip
+        }
+
+        static void Log(LogType type, string message)
+        {
+            var prevColor = Console.ForegroundColor;
+
+            Console.ForegroundColor = type switch
+            {
+                LogType.Info => ConsoleColor.Cyan,
+                LogType.Success => ConsoleColor.Green,
+                LogType.Warning => ConsoleColor.Yellow,
+                LogType.Error => ConsoleColor.Red,
+                LogType.Manual => ConsoleColor.Magenta,
+                LogType.Update => ConsoleColor.Green,
+                LogType.Skip => ConsoleColor.DarkGray,
+                _ => prevColor
+            };
+
+            Console.WriteLine(message);
+            Console.ForegroundColor = prevColor;
+        }
+
+
         private static readonly string IGNORED_TXT = "ignored.txt";
         private static readonly string IGNORED_JSON = "ignored.json";
         private static readonly string VERSION_RAPORT_TXT = "version_raport.txt";
@@ -30,7 +62,7 @@ namespace VSU
             string rootFolder = options.Path ?? Directory.GetCurrentDirectory();
             if (!Directory.Exists(rootFolder))
             {
-                Console.Error.WriteLine($"[ERROR] Path does not exist: {rootFolder}");
+                Log(LogType.Error,$"[ERROR] Path does not exist: {rootFolder}");
                 Environment.Exit(1);
             }
 
@@ -40,7 +72,7 @@ namespace VSU
             }
             catch (ArgumentException ex)
             {
-                Console.Error.WriteLine($"[ERROR] Invalid argument: {ex.Message}");
+                Log(LogType.Error,$"[ERROR] Invalid argument: {ex.Message}");
                 ShowHelp();
                 Environment.Exit(1);
             }
@@ -76,14 +108,14 @@ namespace VSU
             var allVersions = new List<string>();
             int updatedCount = 0;
 
-            Console.WriteLine($"[INFO] Starting in: {rootFolder}");
-            Console.WriteLine($"[INFO] Ignored patterns: {ignoredPatterns.Count}");
-            Console.WriteLine($"[INFO] Extensions: {string.Join(", ", allowedExtensions)}");
-            Console.WriteLine($"[INFO] Increment mode: {options.IncrementMode}");
+            Log(LogType.Info,$"[INFO] Starting in: {rootFolder}");
+            Log(LogType.Info,$"[INFO] Ignored patterns: {ignoredPatterns.Count}");
+            Log(LogType.Info,$"[INFO] Extensions: {string.Join(", ", allowedExtensions)}");
+            Log(LogType.Info,$"[INFO] Increment mode: {options.IncrementMode}");
             if (!string.IsNullOrEmpty(options.SetAllVersion))
-                Console.WriteLine($"[INFO] Manual all version: {options.SetAllVersion}");
+                Log(LogType.Info,$"[INFO] Manual all version: {options.SetAllVersion}");
             if (options.SetFiles.Count > 0)
-                Console.WriteLine($"[INFO] Manual files: {string.Join(", ", options.SetFiles)} to {options.SetVersion ?? "none"}");
+                Log(LogType.Info,$"[INFO] Manual files: {string.Join(", ", options.SetFiles)} to {options.SetVersion ?? "none"}");
             bool hasPartialSets = options.SetMajor.HasValue || options.SetMinor.HasValue || options.SetBuild.HasValue || options.SetRevision.HasValue;
             if (hasPartialSets)
             {
@@ -92,16 +124,16 @@ namespace VSU
                 if (options.SetMinor.HasValue) partialInfo.Add($"minor={options.SetMinor}");
                 if (options.SetBuild.HasValue) partialInfo.Add($"build={options.SetBuild}");
                 if (options.SetRevision.HasValue) partialInfo.Add($"revision={options.SetRevision}");
-                Console.WriteLine($"[INFO] Manual partial: {string.Join(", ", partialInfo)}");
+                Log(LogType.Info,$"[INFO] Manual partial: {string.Join(", ", partialInfo)}");
             }
-            Console.WriteLine();
+            Log(LogType.Info,"");
 
             foreach (var file in Directory.EnumerateFiles(rootFolder, "*.*", SearchOption.AllDirectories)
                          .Where(f => allowedExtensions.Contains(Path.GetExtension(f))))
             {
                 if (IsIgnored(file, ignoredPatterns))
                 {
-                    Console.WriteLine($"[-] Ignoring: {file}");
+                    Log(LogType.Info,$"[-] Ignoring: {file}");
                     continue;
                 }
 
@@ -205,7 +237,7 @@ namespace VSU
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[ERROR] {file}: {ex.Message}");
+                    Log(LogType.Info,$"[ERROR] {file}: {ex.Message}");
                 }
             }
 
@@ -225,8 +257,8 @@ namespace VSU
             report.Add($"Average project version: {overallVersion}");
 
             File.WriteAllLines(reportPath, report);
-            Console.WriteLine($"\n[OK] Finished. Report: {reportPath}");
-            Console.WriteLine($"[INFO] Average project version: {overallVersion}");
+            Log(LogType.Info,$"\n[OK] Finished. Report: {reportPath}");
+            Log(LogType.Info,$"[INFO] Average project version: {overallVersion}");
         }
 
         private static void ValidateOptions(Options options, string rootFolder)
@@ -418,7 +450,7 @@ namespace VSU
                 hashes.TryGetValue(filePath, out string? oldHash);
                 if (oldHash == newHash && !string.IsNullOrEmpty(currentVersion))
                 {
-                    Console.WriteLine($"[=] {filePath} – no changes");
+                    Log(LogType.Info,$"[=] {filePath} – no changes");
                     return null;
                 }
                 shouldUpdate = true;
@@ -430,12 +462,12 @@ namespace VSU
             if (isManual && !string.IsNullOrEmpty(targetVersion))
             {
                 targetVer = targetVersion;
-                Console.WriteLine($"[M] {filePath} – manual version {targetVer}");
+                Log(LogType.Info,$"[M] {filePath} – manual version {targetVer}");
             }
             else
             {
                 targetVer = IncrementVersion(currentVersion ?? "1.0.0.0", options, options.IncrementMode);
-                Console.WriteLine($"[↑] {filePath} – new version {targetVer}");
+                Log(LogType.Info,$"[↑] {filePath} – new version {targetVer}");
             }
 
             string versionLine = $"// Version: {targetVer}";
@@ -766,7 +798,7 @@ namespace VSU
 
         static void ShowHelp()
         {
-            Console.WriteLine(@"
+            Log(LogType.Info,@"
     VSU - VersionSolutionUpdater – automatic version updater for files
 
 Description:
